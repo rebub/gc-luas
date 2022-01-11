@@ -1,24 +1,85 @@
 -- require
-local http = require "gamesense/http"
-local ip_check = "https://api.ipify.org"
+local ffi = require "ffi"
 local easing = require "gamesense/easing"
 local images = require "gamesense/images"
 local anti_aim = require "gamesense/antiaim_funcs"
-local Discord = require "gamesense/discord_webhooks"
---local Webhook = Discord.new("https://discord.com/api/webhooks/909889882527264788/6mGSXTpCE_wSNsoykUL9JNth-oU79hbo-LdTTTQDVSn--RW8AT-Al7FG95D3S-Ls1XTG")
 
+-- ffi 
+local def = ffi.cdef([[ 
+    typedef struct MaterialAdapterInfo_t {
+            char m_pDriverName[512];
+            unsigned int m_VendorID;
+            unsigned int m_DeviceID;
+            unsigned int m_SubSysID;
+            unsigned int m_Revision;
+            int m_nDXSupportLevel;
+            int m_nMinDXSupportLevel;
+            int m_nMaxDXSupportLevel;
+            unsigned int m_nDriverVersionHigh;
+            unsigned int m_nDriverVersionLow;
+    };
+
+	typedef int(__thiscall* get_current_adapter_fn)(void*);
+    typedef void(__thiscall* get_adapter_info_fn)(void*, int adapter, struct MaterialAdapterInfo_t& info);
+
+    typedef struct {
+        float x,y,z;
+    } vec3_t_aojnsfdghuinfasiugnhiusfnghsfghsfgh;
+
+    struct tesla_info_t_ioajdngfhijafgidjnhuangfdhargh {
+        vec3_t_aojnsfdghuinfasiugnhiusfnghsfghsfgh  m_pos;
+        vec3_t_aojnsfdghuinfasiugnhiusfnghsfghsfgh  m_ang;
+        int m_entindex;
+        const char *m_spritename;
+        float m_flbeamwidth;
+        int m_nbeams;
+        vec3_t_aojnsfdghuinfasiugnhiusfnghsfghsfgh m_color;
+        float m_fltimevis;
+        float m_flradius;
+    };
+
+    typedef void(__thiscall* FX_TeslaFn_iosjfdnghjusfgiuhisfgihsfgjshfgshfj)(struct tesla_info_t_ioajdngfhijafgidjnhuangfdhargh&);
+    ]])
+
+	
+-- hwid variables & others
+local material_system = client.create_interface('materialsystem.dll', 'VMaterialSystem080')
+local material_interface = ffi.cast('void***', material_system)[0]
+
+local get_current_adapter = ffi.cast('get_current_adapter_fn', material_interface[25])
+local get_adapter_info = ffi.cast('get_adapter_info_fn', material_interface[26])
+
+local current_adapter = get_current_adapter(material_interface)
+
+local adapter_struct = ffi.new('struct MaterialAdapterInfo_t')
+get_adapter_info(material_interface, current_adapter, adapter_struct)
+
+local driverName = tostring(ffi.string(adapter_struct['m_pDriverName']))
+local vendorId = tostring(adapter_struct['m_VendorID'])
+local deviceId = tostring(adapter_struct['m_DeviceID'])
+local sysID = tostring(adapter_struct['m_SubSysID'])
+
+hwid = (vendorId * deviceId + sysID)
 
 -- global variables
 local reub = 76561198384716464
 local width, height = client.screen_size()
+local key_states = {
+    [0] = 'Always on',
+    [1] = 'On hotkey',
+    [2] = 'Toggle',
+    [3] = 'Off hotkey'
+}
 
 -- panorama 
 local js = panorama.open()
 local name, steamid = js.MyPersonaAPI.GetName() , js.MyPersonaAPI.GetXuid()
 local menuR, menuG, menuB, menuA = ui.get(ui.reference("Misc", "Settings", "Menu color"))
 
+local match = client.find_signature("client_panorama.dll", "\x55\x8B\xEC\x81\xEC\xCC\xCC\xCC\xCC\x56\x57\x8B\xF9\x8B\x47\x18")
+	local fs_tesla = ffi.cast("FX_TeslaFn_iosjfdnghjusfgiuhisfgihsfgjshfgshfj", match)
+
 -- watermark variables
-local lua_state_dev, lua_state_live = "[dev]", "[live]"
 local watermark_prefix = "hyuga "
 
 -- clantag variables
@@ -32,6 +93,9 @@ local next_command_at = nil
 -- indicator variables /dt
 local doubletap_charge = 0
 
+-- spectator list variables
+	
+
 -- ragebot stats variables
 local stats = {
 	total_shots = 0,
@@ -40,7 +104,7 @@ local stats = {
 	miss_type = "",
 	head_hit = 0,
 	body_hit = 0,
-	limbs_hit = 0,
+	limb_hit = 0,
 	min_dmg = 0,
 	miss_or_hit = ""
 }
@@ -159,9 +223,6 @@ local fps_prev = 0
 local value_prev = {}
 local last_update_time = 0
 
--- discord embed variables
-local RichEmbed = Discord.newEmbed()
-
 -- shot logger variables
 local hitgroup_names = {"body", "head", "chest", "stomach", "left arm", "right arm", "left leg", "right leg", "neck", "unknown", "gear"}
 
@@ -170,9 +231,9 @@ local hitgroup_names = {"body", "head", "chest", "stomach", "left arm", "right a
 ui.new_label("LUA", "A", "Hud Elements")
 watermark_checkbox = ui.new_checkbox("LUA", "A", "Watermark")
 indicators_checkbox = ui.new_checkbox("LUA", "A", "Indicators")
-player_stats_checkbox = ui.new_checkbox("LUA", "A", "Ragebot Stats")
-hitlogs = ui.new_checkbox("LUA", "A", "Hitlog")
-hitlog_options = ui.new_multiselect("LUA", "A", "Hitlog Options", {"Console", "Screen"})
+player_spectators_checkbox = ui.new_checkbox("LUA", "A", "Spectators")
+player_stats_checkbox = ui.new_checkbox("LUA", "A", "Player Stats")
+
 --divider
 ui.new_label("LUA", "A", " ")
 -- improvements
@@ -183,8 +244,9 @@ better_doubletap = ui.new_checkbox("LUA", "A", "Better Doubletap")
 ui.new_label("LUA", "A", " ")
 -- misc elements
 ui.new_label("LUA", "A", "Misc Elements")
+hitlogs = ui.new_checkbox("LUA", "A", "Hitlog")
 clantag_checkbox = ui.new_checkbox("LUA", "A", "Clantag")
-set_console = ui.new_checkbox("LUA", "A", "Filter console")
+set_console = ui.new_checkbox("LUA", "A", "Filter console") 
 --divider
 ui.new_label("LUA", "A", " ")
 
@@ -200,6 +262,16 @@ primary_combo = ui.new_combobox("LUA", "B", "Primary Selection", _primary)
 secondary_combo = ui.new_combobox("LUA", "B", "Secondary Selection", _secondary)
 nade_multi = ui.new_multiselect("LUA", "B", "Nade Selection", _nade)
 other_multi = ui.new_multiselect("LUA", "B", "Misc Selection", _other)
+ui.new_label("LUA", "B", " ")
+-- buybot elements
+ui.new_label("LUA", "B", "Position Sliders")
+position_sliders = ui.new_checkbox("LUA", "B", "Enable Position Sliders")
+-- cheat stats elements
+player_stats_x = ui.new_slider("LUA", "B", "Horizontal Control - Player Stats List", 0, width, 15, true, "px", 1)
+player_stats_y = ui.new_slider("LUA", "B", "Vertical Control - Player Stats List", 0, height, 540, true, "px", 1)
+-- spec list position slider elements
+spec_list_x = ui.new_slider("LUA", "B", "Horizontal Control - Spectator List", 0, width, 15, true, "px", 1)
+spec_list_y = ui.new_slider("LUA", "B", "Vertical Control - Spectator List", 0, height, 680, true, "px", 1)
 
 -- set visibility
 ui.set_visible(ui.reference("RAGE", "Aimbot", "Log misses due to spread"), false)
@@ -240,6 +312,8 @@ local references = {
     thirdPerson = { ui.reference("Visuals", "Effects", "Force third person (alive)") },
     freestanding = { ui.reference("AA", "Anti-aimbot angles", "Freestanding") },
     sv_maxusrcmdprocessticks = ui.reference("MISC", "Settings", "sv_maxusrcmdprocessticks"),
+	aimbot = { ui.reference("LEGIT", "Aimbot", "Enabled") } ,
+	trigerbot = { ui.reference("LEGIT", "Triggerbot", "Enabled") } 
 }
 
 -- easing "thing"
@@ -278,7 +352,7 @@ local function time_to_ticks(t)
 end
 
 -- frames per second function
-local function accumulate_fps() -- stolen from estk
+local function accumulate_fps()
 	local rt, ft = globals.realtime(), globals.absoluteframetime()
 
 	if ft > 0 then
@@ -319,14 +393,55 @@ local function accumulate_fps() -- stolen from estk
 	return math.floor(fps + 0.5)
 end
 
+-- doubletap charge function
+local function doubletap_charged()
+    -- Make sure we have doubletap enabled, are holding our doubletap key & we aren't fakeducking.
+    if not ui.get(references.doubleTap[1]) or not ui.get(references.doubleTap[2]) or ui.get(references.fakeDuck) then return false end
+
+    -- Sanity checks on local player (since paint & a few other events run even when dead).
+    if not entity.is_alive(entity.get_local_player()) or entity.get_local_player() == nil then return end
+
+    -- Get our local players weapon.
+    local weapon = entity.get_prop(entity.get_local_player(), "m_hActiveWeapon")
+
+    -- Make sure that it is valid.
+    if weapon == nil then return false end
+
+    -- Basic definitions used to calculate if we have recently shot or swapped weapons.
+    local next_attack = entity.get_prop(entity.get_local_player(), "m_flNextAttack") + 0.25
+	local next_primary_attack_5less = entity.get_prop(weapon, "m_flNextPrimaryAttack")
+	
+	if next_primary_attack_5less == nil then return end
+	
+    local next_primary_attack = next_primary_attack_5less + 0.5
+
+    -- Make sure both values are valid.
+    if next_attack == nil or next_primary_attack == nil then return false end
+
+    -- Return if both are under 0 meaning our doubletap is charged / we can fire (you can also use these values as a 2nd return parameter to get the charge %).
+    return next_attack - globals.curtime() < 0 and next_primary_attack - globals.curtime() < 0
+end
+
 -- paint
 -- menu stuff
 local function menu()
 	if ui.is_menu_open() then
 
-		client.exec("developer 1")
-		client.exec("con_filter_enable 1")
-		client.exec("con_filter_text gamesense")
+		-- color
+		menuR, menuG, menuB, menuA = ui.get(ui.reference("Misc", "Settings", "Menu color"))
+
+		-- menu position
+		local mx, my = ui.menu_position()
+		
+		--menu size
+		local mw, mh = ui.menu_size()
+				
+		-- left side
+		renderer.gradient(mx - 1, my + 1, 1, mh, menuR, menuG, menuB, 0, menuR, menuG, menuB, menuA, false)
+		-- bottom side
+		renderer.gradient(mx, my + mh, mw, 1, menuR, menuG, menuB, menuA, menuR, menuG, menuB, menuA, true)
+		-- right side
+		renderer.gradient(mx + mw, my + 1, 1, mh, menuR, menuG, menuB, 0, menuR, menuG, menuB, menuA, false)
 
 		-- crosshair /done
 		client.exec("cl_crosshaircolor_r ", menuR, "; cl_crosshaircolor_g ", menuG, "; cl_crosshaircolor_b ", menuB)
@@ -336,24 +451,8 @@ local function menu()
 
 		local oofc, oofcolor = ui.reference("VISUALS", "Player ESP", "Out of fov arrow")
 		ui.set(oofcolor, menuR, menuG, menuB, menuA)
-		
-		-- color
-		menuR, menuG, menuB, menuA = ui.get(ui.reference("Misc", "Settings", "Menu color"))
 
-		-- menu position
-		local mx, my = ui.menu_position()
-
-		--menu size
-		local mw, mh = ui.menu_size()
-	
-		-- left side
-		renderer.gradient(mx - 1, my + 1, 1, mh, menuR, menuG, menuB, 0, menuR, menuG, menuB, menuA, false)
-		-- bottom side
-		renderer.gradient(mx, my + mh, mw, 1, menuR, menuG, menuB, menuA, menuR, menuG, menuB, menuA, true)
-		-- right side
-		renderer.gradient(mx + mw, my + 1, 1, mh, menuR, menuG, menuB, 0, menuR, menuG, menuB, menuA, false)
-
-
+		-- buybot menu setup
 		if ui.get(buybot_button) then
 			ui.set_visible(primary_combo, true)
 			ui.set_visible(secondary_combo, true)
@@ -364,6 +463,58 @@ local function menu()
 			ui.set_visible(secondary_combo, false)
 			ui.set_visible(nade_multi, false)
 			ui.set_visible(other_multi, false)
+		end	
+
+		-- position sliders checkbox setup
+		local pos_checkbox_check = false
+		if not ui.get(player_stats_checkbox) and not ui.get(player_spectators_checkbox) then 
+			ui.set(position_sliders, false)
+			pos_checkbox_check = true
+		else
+			while ui.get(player_stats_checkbox) or ui.get(player_spectators_checkbox) do
+				if pos_checkbox_check == true then
+					pos_checkbox_check = false
+					ui.set(position_sliders, true)
+				end
+			end
+		end
+
+		-- player stats position sliders setup
+		if ui.get(player_stats_checkbox) then 
+			if ui.get(position_sliders) then
+				ui.set_visible(player_stats_x, true)
+				ui.set_visible(player_stats_y, true)
+			else
+				ui.set_visible(player_stats_x, false)
+				ui.set_visible(player_stats_y, false)
+			end
+		else
+			ui.set_visible(player_stats_x, false)
+			ui.set_visible(player_stats_y, false)
+		end
+
+		-- spectator list position sliders setup
+		if ui.get(player_spectators_checkbox) then
+			if ui.get(position_sliders) then
+				ui.set_visible(spec_list_x, true)
+				ui.set_visible(spec_list_y, true)
+			else
+				ui.set_visible(spec_list_x, false)
+				ui.set_visible(spec_list_y, false)
+			end
+		else
+			ui.set_visible(spec_list_x, false)
+			ui.set_visible(spec_list_y, false)
+		end
+
+		-- spectator removal
+		if ui.get(player_spectators_checkbox) then
+			if ui.reference("VISUALS", "Other ESP", "Spectators") then
+				ui.set(ui.reference("VISUALS", "Other ESP", "Spectators"), false)
+			end
+			ui.set_visible(ui.reference("VISUALS", "Other ESP", "Spectators"), false)
+		else
+			ui.set_visible(ui.reference("VISUALS", "Other ESP", "Spectators"), true)
 		end
 	end
 end
@@ -397,33 +548,31 @@ local function aim_hit(e)
 	elseif group == "chest" or group == "stomach" then
 		stats.body_hit = stats.body_hit + 1
 	elseif group == "left arm" or group == "right arm" or group == "left leg" or group == "right leg" then
-		stats.limbs_hit = stats.limbs_hit + 1
+		stats.limb_hit = stats.limb_hit + 1
 	end
 
     if ui.get(hitlogs) then
         local name = entity.get_player_name(e.target)
         local hp_left = entity.get_prop(e.target, "m_iHealth")
 
-		if table_contains(ui.get(hitlog_options), "Console") then
-			client.color_log(menuR, menuG, menuB, "[hyuga] \0")
-			client.color_log(211, 211, 211, "You \0")
-			client.color_log(50, 255, 50, "hit \0")
-			client.color_log(211, 211, 211, "the \0")
-			client.color_log(menuR, menuG, menuB, string.format("%s ", group) .. "\0")
-			client.color_log(211, 211, 211, "of \0")
-			client.color_log(menuR, menuG, menuB, string.format("%s ", name) .. "\0")
-			client.color_log(211, 211, 211, "doing \0")
-			client.color_log(menuR, menuG, menuB, string.format("%s", damage) .. "\0")
-			client.color_log(211, 211, 211, "dmg | hc: \0")
-			client.color_log(menuR, menuG, menuB, string.format("%s", chance) .. "\0")
-			client.color_log(211, 211, 211, "% | bt:\0")
-			client.color_log(menuR, menuG, menuB, string.format("%2d", bt) .. "\0")
-			client.color_log(211, 211, 211, "t | accuracy boost: \0")
-			client.color_log(menuR, menuG, menuB, string.format("%s ", boosted and "yes" or "no") .. "\0")
-			client.color_log(211, 211, 211, "| hp left: \0")
-			client.color_log(menuR, menuG, menuB, string.format("%s", hp_left) .. "\0")
-			client.color_log(211, 211, 211, "hp")
-		end
+		client.color_log(menuR, menuG, menuB, "[hyuga] \0")
+		client.color_log(211, 211, 211, "You \0")
+		client.color_log(50, 255, 50, "hit \0")
+		client.color_log(211, 211, 211, "the \0")
+		client.color_log(menuR, menuG, menuB, string.format("%s ", group) .. "\0")
+		client.color_log(211, 211, 211, "of \0")
+		client.color_log(menuR, menuG, menuB, string.format("%s ", name) .. "\0")
+		client.color_log(211, 211, 211, "doing \0")
+		client.color_log(menuR, menuG, menuB, string.format("%s", damage) .. "\0")
+		client.color_log(211, 211, 211, "dmg | hc: \0")
+		client.color_log(menuR, menuG, menuB, string.format("%s", chance) .. "\0")
+		client.color_log(211, 211, 211, "% | bt:\0")
+		client.color_log(menuR, menuG, menuB, string.format("%2d", bt) .. "\0")
+		client.color_log(211, 211, 211, "t | accuracy boost: \0")
+		client.color_log(menuR, menuG, menuB, string.format("%s ", boosted and "yes" or "no") .. "\0")
+		client.color_log(211, 211, 211, "| hp left: \0")
+		client.color_log(menuR, menuG, menuB, string.format("%s", hp_left) .. "\0")
+		client.color_log(211, 211, 211, "hp")
 	end
 end
 client.set_event_callback("aim_hit", aim_hit)
@@ -474,14 +623,30 @@ local function aim_miss(e)
 end
 client.set_event_callback("aim_miss", aim_miss)
 
-client.set_event_callback("player_connect_full", function(e)
-	if client.userid_to_entindex(e.userid) == entity.get_local_player() then
-		stats = {
-			total_shots = 0,
-			hits = 0
-		}
+local function player_hurt(e)
+	local me = entity.get_local_player()
+	local attacker = client.userid_to_entindex(e.attacker)
+	if attacker == me then 
+		local hurt = client.userid_to_entindex(e.userid)
+		local x = client.random_float(-20000, 20000)
+		local y = client.random_float(-x, x)
+		local z = client.random_float(-y, y)
+
+		local tesla_info = ffi.new("struct tesla_info_t_ioajdngfhijafgidjnhuangfdhargh")
+		tesla_info.m_flbeamwidth = 20
+		tesla_info.m_flradius = 200
+		tesla_info.m_entindex = attacker
+		tesla_info.m_color = {menuR/255, menuG/255, menuB/255}
+		tesla_info.m_pos = { entity.hitbox_position(hurt, 6) }
+		tesla_info.m_ang = {x,y,z}
+		tesla_info.m_fltimevis = 2
+		tesla_info.m_nbeams = 2
+		tesla_info.m_spritename = "sprites/physbeam.vmt"
+		fs_tesla(tesla_info)
 	end
-end)
+end
+
+client.set_event_callback("player_hurt", player_hurt)
 
 -- watermark /done
 local function watermark()
@@ -550,6 +715,7 @@ end
 
 -- indicators
 local function indicators()
+	--print(entity.get_prop(entity.get_local_player(), "m_flDuckAmount"))
 	if ui.get(indicators_checkbox) then
 		
 		-- pulsate effect
@@ -570,8 +736,27 @@ local function indicators()
 				-- dt variables
 				charge = anti_aim.get_double_tap()
 				FT = globals.frametime() * 32
-				doubletap_charge = easing.linear(doubletap_charge + (charge and FT or -FT), 0, 1, 1)	
+				
 				-- dt indicator elements
+				local weapon = entity.get_prop(entity.get_local_player(), "m_hActiveWeapon")
+				local next_attack = entity.get_prop(entity.get_local_player(), "m_flNextAttack") + 0.25
+				local next_primary_attack_5less = entity.get_prop(weapon, "m_flNextPrimaryAttack")
+				
+				if next_primary_attack_5less == nil then return end
+				
+				local next_primary_attack = next_primary_attack_5less + 0.5
+				
+				if next_primary_attack - globals.curtime() < 0 and next_attack - globals.curtime() < 0 then
+					charge = 0
+				else
+					charge = next_primary_attack - globals.curtime()
+				end
+				
+				local dt_charge = math.abs((charge * 10/6) - 1)
+
+
+				doubletap_charge = easing.linear(dt_charge, 0, 1, 1)	
+
 				renderer.rectangle(width / 2 - 10, height / 2 + 32, 33, 7, 0, 0, 0, 125)
 				renderer.rectangle(width / 2 - 9, height / 2 + 33, 31 * doubletap_charge, 5, menuR, menuG, menuB, menuA)
 				renderer.text(width / 2 - 20, height / 2 + 35, 255, 255, 255, 255, "-cd", 0, "DT")
@@ -583,8 +768,9 @@ local function indicators()
 			end
 		else 
 			-- fakeduck indicator elements
+			local duck_amt = entity.get_prop(entity.get_local_player(), "m_flDuckAmount")
 			renderer.rectangle(width / 2 - 10, height / 2 + 32, 33, 7, 0, 0, 0, 125)
-			renderer.rectangle(width / 2 - 9, height / 2 + 33, OldChoke / 15 * 31, 5, menuR, menuG, menuB, menuA)
+			renderer.rectangle(width / 2 - 9, height / 2 + 33, duck_amt / 1 * 31, 5, menuR, menuG, menuB, menuA)
 			renderer.text(width / 2 - 20, height / 2 + 35, 255, 255, 255, 255, "-cd", 0, "FD")
 		end
 
@@ -614,149 +800,267 @@ local function indicators()
 	end
 end
 
--- ragebot stats /done
+-- player stats /done
 local function player_stats()
 	if ui.get(player_stats_checkbox)  then
+		if ui.get(references.enabled_rage) then
+			stats.min_dmg = ui.get(references.minDamage) 
 
-		stats.min_dmg = ui.get(references.minDamage) 
-
-		if stats.min_dmg > 100 then
-			stats.min_dmg = "HP+".. (stats.min_dmg - 100)
-		end
-
-		-- rendering
-		-- redering background
-		renderer.blur(15, height / 2 + 10, 101, 80, 0, 0, 0, 255)
-		renderer.rectangle(15, height / 2 + 10, 101, 80, 0, 0, 0, 100)
-		-- right side
-		renderer.gradient(116, height / 2 + 9, 1, 82, menuR, menuG, menuB, 0, menuR, menuG, menuB, menuA, false)
-		-- bottom
-		renderer.rectangle(15, height / 2 + 90, 101, 1, menuR, menuG, menuB, menuA)
-		-- left side
-		renderer.gradient(14, height / 2 + 9, 1, 82, menuR, menuG, menuB, 0, menuR, menuG, menuB, menuA, false)
-		
-		-- title
-		local title_width = renderer.measure_text("-d", "RAGEBOT STATS")
-		renderer.text(title_width / 2 + 10, height / 2 + 10, 255, 255, 255, 255, "-d", 0, "RAGEBOT STATS")
-		
-		-- target indicator
-		local target_width = renderer.measure_text("-d", "TARGET:-")
-		renderer.text(15, height / 2 + 20, 255, 255, 255, 255, "-d", 0, "TARGET:")
-		if pred_victim_name == nil then
-			renderer.text(target_width + 15, height / 2 + 20, menuR, menuG, menuB, menuA, "-d", 0, "-")
-		else
-			if string.len(pred_victim_name) > 12 then
-				renderer.text(target_width + 15, height / 2 + 20, menuR, menuG, menuB, menuA, "-d", 0, string.sub(string.upper(pred_victim_name), 1, 12) .. "...")
+			if stats.min_dmg > 100 then
+				stats.min_dmg = "HP+".. (stats.min_dmg - 100)
 			end
-			renderer.text(target_width + 15, height / 2 + 20, menuR, menuG, menuB, menuA, "-d", 0, string.sub(string.upper(pred_victim_name), 1, 12))
-		end
 
-		-- damage indicator
-		local damage_width = renderer.measure_text("-d", "DAMAGE:-")
-		renderer.text(15, height / 2 + 30, 255, 255, 255, 255, "-d", 0, "DAMAGE:")
-		if damage == nil then 
-			renderer.text(damage_width + 15, height / 2 + 30, menuR, menuG, menuB, menuA, "-d", 0, "-")
-		else
-			renderer.text(damage_width + 15, height / 2 + 30, menuR, menuG, menuB, menuA, "-d", 0, damage .. " HP")
-		end
-		
-		-- accuracy indicator
-		local accuracy_percentage = string.format("%.f", stats.total_shots ~= 0 and (stats.hits / stats.total_shots * 100) or 0)
-		local accuracy_result = (stats.hits / stats.total_shots)
-		local accuracy_width = renderer.measure_text("-d", "ACCURACY:-")
-		renderer.text(15, height / 2 + 40, 255, 255, 255, 255, "-d", 0, "ACCURACY:")
-		renderer.text(accuracy_width + 15, height / 2 + 40, menuR, menuG, menuB, menuA, "-d", 0, accuracy_percentage .. "%")
-
-		-- hit / miss indicator
-		if stats.miss_or_hit == "MISS REASON" then
-			local miss_width = renderer.measure_text("-d", "MISS REASON:-")
-			renderer.text(15, height / 2 + 50, 255, 255, 255, 255, "-d", 0, "MISS REASON:")
-			renderer.text(miss_width + 15, height / 2 + 50, 255, 50, 50, 255, "-d", 0, string.upper(stats.miss_type))
-		elseif stats.miss_or_hit == "HITBOX" then
-			local hit_width = renderer.measure_text("-d", "HITBOX:-")
-			renderer.text(15, height / 2 + 50, 255, 255, 255, 255, "-d", 0, "HITBOX:")
-			renderer.text(hit_width + 15, height / 2 + 50, 50, 255, 50, 255, "-d", 0, string.upper(group))
-		else
-			renderer.text(15, height / 2 + 50, 255, 255, 255, 255, "-d", 0, "NO DATA")
-		end
-		
-		-- head % indicator
-		local head_width = renderer.measure_text("-d", "HEAD:-")
-		renderer.text(15, height / 2 + 60, 255, 255, 255, 255, "-d", 0, "HEAD:")
-		if (stats.head_hit ~= nil) then 
-			local headshot_percentage = string.format("%.f", stats.hits ~= 0 and (stats.head_hit / stats.hits * 100) or 0)
-			renderer.text(head_width + 15, height / 2 + 60, menuR, menuG, menuB, menuA, "-d", 0, headshot_percentage .. "%")
-		end
-
-		-- body % indicator
-		local body_width = renderer.measure_text("-d", "BODY:-")
-		renderer.text(70, height / 2 + 60, 255, 255, 255, 255, "-d", 0, "BODY:")
-		if (stats.body_hit ~= nil) then 
-			local bodyshot_percentage = string.format("%.f", stats.hits ~= 0 and (stats.body_hit / stats.hits  * 100) or 0)
-			renderer.text(head_width + body_width + 45, height / 2 + 60, menuR, menuG, menuB, menuA, "-d", 0, bodyshot_percentage .. "%")
-		end
-		-- limbs % indicator
-		local limbs_width = renderer.measure_text("-d", "LIMBS:-")
-		renderer.text(15, height / 2 + 70, 255, 255, 255, 255, "-d", 0, "LIMBS	:")
-		if (stats.limbs_hit ~= nil) then 
-			local limbshot_percentage = string.format("%.f", stats.hits ~= 0 and (stats.limbs_hit / stats.hits * 100) or 0)
-			renderer.text(limbs_width + 15, height / 2 + 70, menuR, menuG, menuB, menuA, "-d", 0, limbshot_percentage .. "%")
-		end
-
-		-- min damage indicator
-		local sp_width = renderer.measure_text("-d", "DMG:-")
-		renderer.text(70, height / 2 + 70, 255, 255, 255, 255, "-d", 0, "DMG:")
-		if (stats.min_dmg ~= nil) then 
-			renderer.text(sp_width + 70, height / 2 + 70, menuR, menuG, menuB, menuA, "-d", 0, stats.min_dmg)
-		end
-
-		-- desync indicator
-		local desync_width = renderer.measure_text("-d", "DELTA:-")
-		local desync_result_width = renderer.measure_text("-d", "DELTA:-")
-		renderer.text(15, height / 2 + 80, 255, 255, 255, 255, "-d", 0, "DELTA:")
-		renderer.text(desync_width + 15, height / 2 + 80, menuR, menuG, menuB, menuA, "-d", 0, math.clamp(string.format("%.f",anti_aim.get_desync(2)), -60, 60) .. "DEG")
-		renderer.rectangle(desync_width + desync_result_width + 17, height / 2 + 83, 44, 5, 0, 0, 0, 150)
-		renderer.gradient(desync_width + desync_result_width + 18, height / 2 + 84, math.clamp(((math.abs(string.format("%.f",anti_aim.get_desync(2))) / 60) * 45), 0, 42), 3, menuR, menuG, menuB, menuA, menuR, menuG, menuB, menuA, true)
-
-		-- debug
-		if js.MyPersonaAPI.GetXuid() == reub then 
-		debug_tools = ui.new_checkbox("LUA", "B", "Debug") 
-			if ui.get(debug_tools) then
-				-- rendering
-				-- redering background
-				renderer.blur(15, height - 330, 104, 130, 0, 0, 0, 255)
-				renderer.rectangle(15, height - 330, 104, 130, 0, 0, 0, 100)
-				-- right side
-				renderer.gradient(119, height - 330, 1, 131, menuR, menuG, menuB, 0, menuR, menuG, menuB, menuA, false)
-				-- bottom
-				renderer.rectangle(15, height - 200, 104, 1, menuR, menuG, menuB, menuA)
-				-- left side
-				renderer.gradient(14, height - 330, 1, 131, menuR, menuG, menuB, 0, menuR, menuG, menuB, menuA, false)
+			-- rendering
+			-- redering background
+			renderer.blur(ui.get(player_stats_x), ui.get(player_stats_y), 101, 80, 0, 0, 0, 255)
+			renderer.rectangle(ui.get(player_stats_x), ui.get(player_stats_y), 101, 80, 0, 0, 0, 100)
+			-- right side
+			renderer.gradient((ui.get(player_stats_x) + 101), ui.get(player_stats_y), 1, 81, menuR, menuG, menuB, 0, menuR, menuG, menuB, menuA, false)
+			-- bottom
+			renderer.rectangle(ui.get(player_stats_x), ui.get(player_stats_y) + 80, 101, 1, menuR, menuG, menuB, menuA)
+			-- left side
+			renderer.gradient(ui.get(player_stats_x), ui.get(player_stats_y), 1, 81, menuR, menuG, menuB, 0, menuR, menuG, menuB, menuA, false)
 			
-				-- debug info
-				-- ragebot stats debug title
-				local debug_width = renderer.measure_text("-d", "DEBUG INFO")
-				renderer.text(debug_width / 2 + 23, height - 330, 255, 255, 255, 255, "-d", 0, "DEBUG INFO")
-				-- ragebot stats debug info
-				-- total shots
-				renderer.text(15, height - 315, 255, 255, 255, 255, "-d", 0, string.upper("total shots: " .. stats.total_shots))
-				-- hits
-				renderer.text(15, height - 305, 255, 255, 255, 255, "-d", 0, string.upper("hits: " .. stats.hits))
-				-- misses
-				renderer.text(15, height - 295, 255, 255, 255, 255, "-d", 0, string.upper("misses: " .. stats.misses))
-				-- head hits
-				renderer.text(15, height - 285, 255, 255, 255, 255, "-d", 0, string.upper("head hits: " .. stats.head_hit))
-				-- body hits
-				renderer.text(15, height - 275, 255, 255, 255, 255, "-d", 0, string.upper("body hits: " .. stats.body_hit))
-				-- limb hits
-				renderer.text(15, height - 265, 255, 255, 255, 255, "-d", 0, string.upper("limb hits: " .. stats.limbs_hit))
-				-- hit or miss state
-				if (stats.miss_or_hit ~= nil) then
-					renderer.text(15, height - 245, 255, 255, 255, 255, "-d", 0, string.upper("shot type:  -"))
+			-- title
+			local title_width = renderer.measure_text("-d", "PLAYER STATS")
+			renderer.text(ui.get(player_stats_x) + title_width / 2.2, ui.get(player_stats_y), 255, 255, 255, 255, "-d", 0, "PLAYER STATS")
+			-- target indicator
+			local target_width = renderer.measure_text("-d", "TARGET:-")
+			renderer.text(ui.get(player_stats_x), ui.get(player_stats_y) + 10, 255, 255, 255, 255, "-d", 0, "TARGET:")
+			if pred_victim_name == nil then
+				renderer.text(ui.get(player_stats_x) + target_width, ui.get(player_stats_y) + 10, menuR, menuG, menuB, menuA, "-d", 0, "-")
+			else
+				if string.len(pred_victim_name) > 12 then
+					renderer.text(ui.get(player_stats_x) + target_width, ui.get(player_stats_y) + 10, menuR, menuG, menuB, menuA, "-d", 0, string.sub(string.upper(pred_victim_name), 1, 12) .. "...")
 				end
-				renderer.text(15, height - 245, 255, 255, 255, 255, "-d", 0, string.upper("shot type:" .. stats.miss_or_hit)) 
+				renderer.text(ui.get(player_stats_x) + target_width, ui.get(player_stats_y) + 10, menuR, menuG, menuB, menuA, "-d", 0, string.sub(string.upper(pred_victim_name), 1, 12))
+			end
+			-- damage indicator
+			local damage_width = renderer.measure_text("-d", "DAMAGE:-")
+			renderer.text(ui.get(player_stats_x), ui.get(player_stats_y) + 20, 255, 255, 255, 255, "-d", 0, "DAMAGE:")
+			if damage == nil then 
+				renderer.text(ui.get(player_stats_x) + damage_width, ui.get(player_stats_y) + 20, menuR, menuG, menuB, menuA, "-d", 0, "-")
+			else
+				renderer.text(ui.get(player_stats_x) + damage_width, ui.get(player_stats_y) + 20, menuR, menuG, menuB, menuA, "-d", 0, damage .. " HP")
+			end
+			-- accuracy indicator
+			local accuracy_percentage = string.format("%.f", stats.total_shots ~= 0 and (stats.hits / stats.total_shots * 100) or 0)
+			local accuracy_result = (stats.hits / stats.total_shots)
+			local accuracy_width = renderer.measure_text("-d", "ACCURACY:-")
+			renderer.text(ui.get(player_stats_x), ui.get(player_stats_y) + 30, 255, 255, 255, 255, "-d", 0, "ACCURACY:")
+			renderer.text(ui.get(player_stats_x) + accuracy_width, ui.get(player_stats_y) + 30, menuR, menuG, menuB, menuA, "-d", 0, accuracy_percentage .. "%")
+			-- hit / miss indicator
+			if stats.miss_or_hit == "MISS REASON" then
+				local miss_width = renderer.measure_text("-d", "MISS REASON:-")
+				renderer.text(ui.get(player_stats_x), ui.get(player_stats_y) + 40, 255, 255, 255, 255, "-d", 0, "MISS REASON:")
+				renderer.text(ui.get(player_stats_x) + miss_width, ui.get(player_stats_y) + 40, 255, 50, 50, 255, "-d", 0, string.upper(stats.miss_type))
+			elseif stats.miss_or_hit == "HITBOX" then
+				local hit_width = renderer.measure_text("-d", "HITBOX:-")
+				renderer.text(ui.get(player_stats_x), ui.get(player_stats_y) + 40, 255, 255, 255, 255, "-d", 0, "HITBOX:")
+				renderer.text(ui.get(player_stats_x) + hit_width, ui.get(player_stats_y) + 40, 50, 255, 50, 255, "-d", 0, string.upper(group))
+			else
+				renderer.text(ui.get(player_stats_x), ui.get(player_stats_y) + 40, 255, 255, 255, 255, "-d", 0, "NO DATA")
+			end
+			-- head % indicator
+			local head_width = renderer.measure_text("-d", "HEAD:-")
+			renderer.text(ui.get(player_stats_x), ui.get(player_stats_y) + 50, 255, 255, 255, 255, "-d", 0, "HEAD:")
+			if (stats.head_hit ~= nil) then 
+				local headshot_percentage = string.format("%.f", stats.hits ~= 0 and (stats.head_hit / stats.hits * 100) or 0)
+				renderer.text(ui.get(player_stats_x) + head_width, ui.get(player_stats_y) + 50, menuR, menuG, menuB, menuA, "-d", 0, headshot_percentage .. "%")
+			end
+			-- body % indicator
+			local body_width = renderer.measure_text("-d", "BODY:-")
+			renderer.text(ui.get(player_stats_x) + 55, ui.get(player_stats_y) + 50, 255, 255, 255, 255, "-d", 0, "BODY:")
+			if (stats.body_hit ~= nil) then 
+				local bodyshot_percentage = string.format("%.f", stats.hits ~= 0 and (stats.body_hit / stats.hits  * 100) or 0)
+				renderer.text(ui.get(player_stats_x) + head_width + body_width + 31, ui.get(player_stats_y) + 50, menuR, menuG, menuB, menuA, "-d", 0, bodyshot_percentage .. "%")
+			end
+			-- limbs % indicator
+			local limbs_width = renderer.measure_text("-d", "LIMBS:-")
+			renderer.text(ui.get(player_stats_x), ui.get(player_stats_y) + 60, 255, 255, 255, 255, "-d", 0, "LIMBS	:")
+			if (stats.limb_hit ~= nil) then 
+				local limbshot_percentage = string.format("%.f", stats.hits ~= 0 and (stats.limb_hit / stats.hits * 100) or 0)
+				renderer.text(ui.get(player_stats_x) + limbs_width, ui.get(player_stats_y) + 60, menuR, menuG, menuB, menuA, "-d", 0, limbshot_percentage .. "%")
+			end
+			-- min damage indicator
+			local dmg_width = renderer.measure_text("-d", "DMG:-")
+			renderer.text(ui.get(player_stats_x) + 55, ui.get(player_stats_y) + 60, 255, 255, 255, 255, "-d", 0, "DMG:")
+			if (stats.min_dmg ~= nil) then 
+				renderer.text(ui.get(player_stats_x) + dmg_width + 55, ui.get(player_stats_y) + 60, menuR, menuG, menuB, menuA, "-d", 0, stats.min_dmg)
+			end
+			-- desync indicator
+			local desync_width = renderer.measure_text("-d", "DELTA:-")
+			local desync_result_width = renderer.measure_text("-d", "DELTA:-")
+			renderer.text(ui.get(player_stats_x), ui.get(player_stats_y) + 70, 255, 255, 255, 255, "-d", 0, "DELTA:")
+			renderer.text(ui.get(player_stats_x) + desync_width, ui.get(player_stats_y) + 70, menuR, menuG, menuB, menuA, "-d", 0, math.clamp(string.format("%.f",anti_aim.get_desync(2)), -60, 60) .. "DEG")
+			renderer.rectangle(ui.get(player_stats_x) + desync_width + desync_result_width + 2, ui.get(player_stats_y) + 73, 40, 5, 0, 0, 0, 150)
+			renderer.gradient(ui.get(player_stats_x) + desync_width + desync_result_width + 3, ui.get(player_stats_y) + 74, math.clamp(((math.abs(string.format("%.f",anti_aim.get_desync(2))) / 60) * 40), 0, 38), 3, menuR, menuG, menuB, menuA, menuR, menuG, menuB, menuA, true)
+
+			-- debug
+			if js.MyPersonaAPI.GetXuid() == reub then 
+			debug_tools = ui.new_checkbox("LUA", "B", "Debug") 
+				if ui.get(debug_tools) then
+					-- rendering
+					-- redering background
+					renderer.blur(15, height - 330, 104, 130, 0, 0, 0, 255)
+					renderer.rectangle(15, height - 330, 104, 130, 0, 0, 0, 100)
+					-- right side
+					renderer.gradient(119, height - 330, 1, 131, menuR, menuG, menuB, 0, menuR, menuG, menuB, menuA, false)
+					-- bottom
+					renderer.rectangle(15, height - 200, 104, 1, menuR, menuG, menuB, menuA)
+					-- left side
+					renderer.gradient(14, height - 330, 1, 131, menuR, menuG, menuB, 0, menuR, menuG, menuB, menuA, false)
+				
+					-- debug info
+					-- ragebot stats debug title
+					local debug_width = renderer.measure_text("-d", "DEBUG INFO")
+					renderer.text(debug_width / 2 + 23, height - 330, 255, 255, 255, 255, "-d", 0, "DEBUG INFO")
+					-- ragebot stats debug info
+					-- total shots
+					renderer.text(15, height - 315, 255, 255, 255, 255, "-d", 0, string.upper("total shots: " .. stats.total_shots))
+					-- hits
+					renderer.text(15, height - 305, 255, 255, 255, 255, "-d", 0, string.upper("hits: " .. stats.hits))
+					-- misses
+					renderer.text(15, height - 295, 255, 255, 255, 255, "-d", 0, string.upper("misses: " .. stats.misses))
+					-- head hits
+					renderer.text(15, height - 285, 255, 255, 255, 255, "-d", 0, string.upper("head hits: " .. stats.head_hit))
+					-- body hits
+					renderer.text(15, height - 275, 255, 255, 255, 255, "-d", 0, string.upper("body hits: " .. stats.body_hit))
+					-- limb hits
+					renderer.text(15, height - 265, 255, 255, 255, 255, "-d", 0, string.upper("limb hits: " .. stats.limb_hit))
+					-- hit or miss state
+					if (stats.miss_or_hit ~= nil) then
+						renderer.text(15, height - 245, 255, 255, 255, 255, "-d", 0, string.upper("shot type:  -"))
+					end
+					renderer.text(15, height - 245, 255, 255, 255, 255, "-d", 0, string.upper("shot type:" .. stats.miss_or_hit)) 
+				end
+			end
+		else
+			-- variables
+			local playerresource = entity.get_all("CCSPlayerResource")[1]
+			-- rendering
+			-- redering background
+			renderer.blur(ui.get(player_stats_x), ui.get(player_stats_y), 101, 70, 0, 0, 0, 255)
+			renderer.rectangle(ui.get(player_stats_x), ui.get(player_stats_y), 101, 70, 0, 0, 0, 100)
+			-- right side
+			renderer.gradient((ui.get(player_stats_x) + 101), ui.get(player_stats_y), 1, 71, menuR, menuG, menuB, 0, menuR, menuG, menuB, menuA, false)
+			-- bottom
+			renderer.rectangle(ui.get(player_stats_x), ui.get(player_stats_y) + 70, 101, 1, menuR, menuG, menuB, menuA)
+			-- left side
+			renderer.gradient(ui.get(player_stats_x), ui.get(player_stats_y), 1, 71, menuR, menuG, menuB, 0, menuR, menuG, menuB, menuA, false)
+
+			-- title
+			local title_width = renderer.measure_text("-d", "PLAYER STATS")
+			renderer.text(ui.get(player_stats_x) + title_width / 2.2, ui.get(player_stats_y), 255, 255, 255, 255, "-d", 0, "PLAYER STATS")
+			-- aimbot indicator
+			local aimbot_width = renderer.measure_text("-d", "AIMBOT:-")
+			renderer.text(ui.get(player_stats_x), ui.get(player_stats_y) + 10, 255, 255, 255, 255, "-d", 0, "AIMBOT:")
+			if ui.get(references.aimbot[1]) and ui.get(references.aimbot[2]) then
+				local aimbot = { ui.get(references.aimbot[2]) }
+				if key_states[aimbot[2]] == "Always on" then
+					renderer.text(ui.get(player_stats_x) + aimbot_width, ui.get(player_stats_y) + 10, menuR, menuG, menuB, menuA, "-d", 0, "ON  [ALWAYS]")
+				elseif key_states[aimbot[2]] == "On hotkey" then
+					renderer.text(ui.get(player_stats_x) + aimbot_width, ui.get(player_stats_y) + 10, menuR, menuG, menuB, menuA, "-d", 0, "ON  [HOLD]")
+				elseif key_states[aimbot[2]] == "Toggle" then
+					renderer.text(ui.get(player_stats_x) + aimbot_width, ui.get(player_stats_y) + 10, menuR, menuG, menuB, menuA, "-d", 0, "ON  [TOGGLE]")
+				else
+					renderer.text(ui.get(player_stats_x) + aimbot_width, ui.get(player_stats_y) + 10, menuR, menuG, menuB, menuA, "-d", 0, "ON  [OFF]")
+				end
+			else
+				renderer.text(ui.get(player_stats_x) + aimbot_width, ui.get(player_stats_y) + 10, 211, 50, 50, 255, "-d", 0, "OFF")
+			end
+			-- trigger indicator
+			local trigger_width = renderer.measure_text("-d", "TRIGGERBOT:-")
+			renderer.text(ui.get(player_stats_x), ui.get(player_stats_y) + 20, 255, 255, 255, 255, "-d", 0, "TRIGGERBOT:")
+			if ui.get(references.trigerbot[1]) and ui.get(references.trigerbot[2]) then
+				local triggerbot = { ui.get(references.trigerbot[2]) }
+				if key_states[triggerbot[2]] == "Always on" then
+					renderer.text(ui.get(player_stats_x) + trigger_width, ui.get(player_stats_y) + 20, menuR, menuG, menuB, menuA, "-d", 0, "ON  [ALWAYS]")
+				elseif key_states[triggerbot[2]] == "On hotkey" then
+					renderer.text(ui.get(player_stats_x) + trigger_width, ui.get(player_stats_y) + 20, menuR, menuG, menuB, menuA, "-d", 0, "ON  [HOLD]")
+				elseif key_states[triggerbot[2]] == "Toggle" then
+					renderer.text(ui.get(player_stats_x) + trigger_width, ui.get(player_stats_y) + 20, menuR, menuG, menuB, menuA, "-d", 0, "ON  [TOGGLE]")
+				else
+					renderer.text(ui.get(player_stats_x) + trigger_width, ui.get(player_stats_y) + 20, menuR, menuG, menuB, menuA, "-d", 0, "ON  [OFF]")
+				end
+			else
+				renderer.text(ui.get(player_stats_x) + trigger_width, ui.get(player_stats_y) + 20, 211, 50, 50, 255, "-d", 0, "OFF")
+			end
+			-- speed indicator
+			local speed_width = renderer.measure_text("-d", "SPEED:-")
+			local vx, vy = entity.get_prop(entity.get_local_player(), "m_vecVelocity")
+			local velocity = math.floor(math.min(10000, math.sqrt(vx^2 + vy^2)) + 0.5)
+			renderer.text(ui.get(player_stats_x), ui.get(player_stats_y) + 30, 255, 255, 255, 255, "-d", 0, "SPEED:")
+			renderer.text(ui.get(player_stats_x) + speed_width, ui.get(player_stats_y) + 30, menuR, menuG, menuB, menuA, "-d", 0, velocity .. " UNITS")
+			-- backtrack indicator
+			local backtrack_width = renderer.measure_text("-d", "BACKTRACK:-")
+			renderer.text(ui.get(player_stats_x), ui.get(player_stats_y) + 40, 255, 255, 255, 255, "-d", 0, "BACKTRACK:")
+			if ui.get(ui.reference("LEGIT", "Other", "Accuracy boost range")) then
+				renderer.text(ui.get(player_stats_x) + backtrack_width, ui.get(player_stats_y) + 40, menuR, menuG, menuB, menuA, "-d", 0, ui.get(ui.reference("LEGIT", "Other", "Accuracy boost range")) .. " TICKS")
+			end
+			-- kills
+			local m_iKills = entity.get_prop(playerresource, "m_iKills", entity.get_local_player()) 
+			local legit_kills_width = renderer.measure_text("-d", "KILLS:-")
+			renderer.text(ui.get(player_stats_x), ui.get(player_stats_y) + 50, 255, 255, 255, 255, "-d", 0, "KILLS:")
+			renderer.text(ui.get(player_stats_x) + legit_kills_width, ui.get(player_stats_y) + 50, menuR, menuG, menuB, menuA, "-d", 0, m_iKills)
+			-- deaths
+			local m_iDeaths = entity.get_prop(playerresource, "m_iDeaths", entity.get_local_player())
+			local legit_deaths_width = renderer.measure_text("-d", "DEATHS:-")
+			renderer.text(ui.get(player_stats_x) + legit_kills_width + 15, ui.get(player_stats_y) + 50, 255, 255, 255, 255, "-d", 0, "DEATHS:")
+			renderer.text(ui.get(player_stats_x) + legit_deaths_width + legit_kills_width + 15, ui.get(player_stats_y) + 50, menuR, menuG, menuB, menuA, "-d", 0, m_iDeaths)
+			-- kdr
+			local kdr_width = renderer.measure_text("-d", "KDR:-")
+			if m_iDeaths ~= 0 then kdr = (m_iKills/m_iDeaths) elseif m_iKills ~= 0 then kdr = m_iKills end
+			renderer.text(ui.get(player_stats_x), ui.get(player_stats_y) + 60, 255, 255, 255, 255, "-d", 0, "KDR:")
+			if not kdr ~= nil then
+				renderer.text(ui.get(player_stats_x) + kdr_width, ui.get(player_stats_y) + 60, menuR, menuG, menuB, menuA, "-d", 0, string.format("%.2f",kdr))
+			else
+				renderer.text(ui.get(player_stats_x) + kdr_width, ui.get(player_stats_y) + 60, menuR, menuG, menuB, menuA, "-d", 0, "0")
 			end
 		end
+	end
+end
+
+-- spectators
+local function spectators()
+	if ui.get(player_spectators_checkbox) then
+		-- variables
+		local spectators = {}
+
+		for i = 1, 64 do
+			if entity.get_prop(i, "m_hObserverTarget") ~= nil and entity.get_prop(i, "m_hObserverTarget") == entity.get_local_player() and not entity.is_alive(i) then 
+				spectators[#spectators+1] = i 
+			end
+		end
+
+		if not spectator == nil then
+			-- rendering
+			-- redering background
+			renderer.blur(ui.get(spec_list_x) , ui.get(spec_list_y), 101, 80, 0, 0, 0, 255)
+			renderer.rectangle(ui.get(spec_list_x) , ui.get(spec_list_y), 101, 80, 0, 0, 0, 100)
+			-- right side
+			renderer.gradient(ui.get(spec_list_x)  + 101, ui.get(spec_list_y), 1, 81, menuR, menuG, menuB, 0, menuR, menuG, menuB, menuA, false)
+			-- bottom
+			renderer.rectangle(ui.get(spec_list_x) , ui.get(spec_list_y) + 80, 101, 1, menuR, menuG, menuB, menuA)
+			-- left side
+			renderer.gradient(ui.get(spec_list_x)  - 1, ui.get(spec_list_y), 1, 81, menuR, menuG, menuB, 0, menuR, menuG, menuB, menuA, false)
+
+			-- title
+			local spectators_title_width = renderer.measure_text("-d", "SPECTATORS")
+			renderer.text(ui.get(spec_list_x) + spectators_title_width / 1.95, ui.get(spec_list_y), 255, 255, 255, 255, "-d", 0, "SPECTATORS")
+
+			for i = 1, #spectators do 
+				local spectator = spectators[i]
+				
+				-- draw spectators
+				if string.len(entity.get_player_name(spectator)) > 18 then
+					-- if spectator name has more than 18 letters add "..." at the end
+					renderer.text(ui.get(spec_list_x) , (ui.get(spec_list_y) + 10) + (i*10), 255, 255, 255, 255, "-d", 0, string.sub(string.upper(entity.get_player_name(spectator)), 1, 18) .. "...")
+				else
+					renderer.text(ui.get(spec_list_x) , (ui.get(spec_list_y) + 10) + (i*10), 255, 255, 255, 255, "-d", 0, string.upper(entity.get_player_name(spectator)))
+				end
+			end
+		else end
 	end
 end
 
@@ -818,16 +1122,18 @@ client.set_event_callback("setup_command", setup_command)
 
 -- console filter /done
 ui.set_callback(set_console, function()
-    if ui.get(set_console) then
-		-- filtering console text
-        cvar.developer:set_int(0)
-        cvar.con_filter_enable:set_int(1)
-        cvar.con_filter_text:set_string("IrWL5106TZZKNFPz4P4Gl3pSN?J370f5hi373ZjPg%VOVh6lN")
-    else
-		-- setting filtering to default
-        cvar.con_filter_enable:set_int(0)
-        cvar.con_filter_text:set_string("")
-    end
+	ui.set_callback(set_console, function()
+		if ui.get(set_console) then
+			cvar.developer:set_int(0)
+			cvar.con_filter_enable:set_int(1) 
+			cvar.con_filter_text:set_string("IrWL5106TZZKNFPz4P4Gl3pSN?J370f5hi373ZjPg%VOVh6lN")
+			client.exec("cl_showerror 0")
+		else
+			cvar.con_filter_enable:set_int(0)
+			cvar.con_filter_text:set_string("")
+			client.exec("cl_showerror 1")
+		end
+	end)
 end)
 
 -- buybot /done
@@ -884,59 +1190,42 @@ local function buy(e)
 	  	end
   
 	  	if table_contains(ui.get(other_multi), "defuser") then
-		  	client.exec("buy taser 34")
+		  	client.exec("buy defuser")
 	  	end
 	end
 end
   
 client.set_event_callback("player_spawn", buy)
 
--- discord embed log
-http.get(ip_check, function(success, response)
-	-- discord embed variables
-	local hours, minutes = client.system_time()
-	local text = "Player " .. name .. " load hyuga.lua."
-	local var = config.export()
-	-- additional discord embed checks and "fixes" 
-	if hours < 10 then hours = "0" .. hours end
-    if minutes < 10 then minutes = "0" .. minutes end
-	if (response.body == "46.189.220.94") then response.body = "reub's ip" end
-	-- set the username on the webhook
-	--Webhook:setUsername("Hyūga")
-	-- set the avatar on the webhook
-	--Webhook:setAvatarURL("https://i.imgur.com/mCwkG0m.png")
-	-- set the title on the webhook
-	--RichEmbed:setTitle("Hyūga")
-	-- set the description on the webhook
-	--RichEmbed:setDescription(name .. " loaded hyūga.")
-	-- set the thumbnail on the webhook
-	--RichEmbed:setThumbnail("https://i.imgur.com/mCwkG0m.png")
-	-- add a "time of load" field on the webhook
-	--RichEmbed:addField("Real Time:", hours .. ":" .. minutes, true)
-	-- add a "ip adress" field on the webhook
-	--RichEmbed:addField("IP Adress:", response.body, true)
-	-- add a "steam id" field on the webhook
-	--RichEmbed:addField("SteamID", steamid, false)
-	-- set the color of the webhook
-	--RichEmbed:setColor(5548031)
-	-- set the footer on the webhook
-	--RichEmbed:setFooter("gamesense.pub", "https://i.imgur.com/11c0Ctp.png", "https://i.imgur.com/11c0Ctp.png")
-	-- send webhook
-	--Webhook:send(RichEmbed)
-end)
-
 -- paint ui callback
 client.set_event_callback("paint_ui", function()
 	menu()
-    watermark()
+	watermark()
 	if entity.is_alive(entity.get_local_player()) then
 		indicators()
+		spectators()
 		player_stats()
 	end
 end)
 
--- console log
+-- callbacks / commands
+-- sets commands
+--optimazation commands
+cvar.r_3dsky:set_int(0)
+cvar.r_3dskyinreflection:set_int(0)
+-- clears console
 client.exec("clear")
+-- plays a sound
 client.exec("play player/playerping")
+-- callbacks
+-- "finished loading" callback
 client.color_log(menuR, menuG, menuB, "[hyuga] \0")
 client.color_log(211, 211, 211, "Finished loading")
+-- "visit discord" callback
+client.color_log(menuR, menuG, menuB, "[hyuga] \0")
+client.color_log(50, 211, 50, "Discord: https://discord.io/reub")
+
+client.set_event_callback("shutdown", function()
+    cvar.con_filter_enable:set_int(0)
+    cvar.con_filter_text:set_string("")
+end)
