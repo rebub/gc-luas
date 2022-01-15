@@ -269,8 +269,10 @@ spec_list_y = ui.new_slider("LUA", "B", "Vertical Control - Spectator List", 0, 
 --divider
 ui.new_label("LUA", "B", " ")
 -- debug element
-ui.new_label("LUA", "B", "Debug Tools")
-debug_tools = ui.new_checkbox("LUA", "B", "Debug") 
+if steamid == reub then 
+	ui.new_label("LUA", "B", "Debug Tools")
+	debug_tools = ui.new_checkbox("LUA", "B", "Debug") 
+end
 
 -- set visibility
 ui.set_visible(ui.reference("RAGE", "Aimbot", "Log misses due to spread"), false)
@@ -728,8 +730,8 @@ local function player_stats()
 	if ui.get(player_stats_checkbox)  then
 
 		-- debug
-		if ui.get(debug_tools) then
-					if js.MyPersonaAPI.GetXuid() == reub then 
+		if steamid == reub then 
+			if ui.get(debug_tools) then
 						-- rendering
 						-- redering background
 						renderer.blur(15, height - 330, 104, 130, 0, 0, 0, 255)
